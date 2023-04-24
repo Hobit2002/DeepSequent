@@ -49,6 +49,8 @@ class State():
             to_return = hash("This is too complex to be the right way")
         return to_return
 
+# Actions
+
 class Action():
 
     @staticmethod
