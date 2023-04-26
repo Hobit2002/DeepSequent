@@ -331,7 +331,7 @@ class UniversalAssumption(Action):
 
     @staticmethod
     def apply(state:State,formula:int,replace_dict) -> State:
-        new_state = State(*state.formulas)
+        new_state = State(*state.formulas, deterministic = state.deterministic)
         # Replace the universal quantifier in the assumption by its successor formula.
         new_state.formulas[formula] = new_state.formulas[formula].successor
         # Replace variables in this successor formula by the corresponding value from the replace_dict
@@ -457,7 +457,7 @@ class ExistentialGoal(Action):
 
     @staticmethod
     def apply(state:State,formula:int,replace_dict) -> State:
-        new_state = State(*state.formulas)
+        new_state = State(*state.formulas, deterministic = state.deterministic)
         new_state.formulas[formula] = new_state.formulas[formula].successor
         Action.recursive_replacement(new_state.formulas[formula],replace_dict)
         return new_state

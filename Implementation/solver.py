@@ -55,7 +55,9 @@ def brute_force(state):
                     assignments = action.getAssignments(State(*state.formulas),sequent)
                     # Apply all possible instantiations
                     result = []
-                    for replace_dict in assignments: result += action.apply(State(*state.formulas),sequent,replace_dict) 
+                    for replace_dict in assignments: 
+                        result.append(action.apply(State(*state.formulas,deterministic = False),sequent,replace_dict)) 
+                    # Set 
                 # Otherwise simply apply the action
                 else: result = action.apply(State(*state.formulas),sequent)
             # If a recursion error occurs during action aplication, continue to the next sequent
