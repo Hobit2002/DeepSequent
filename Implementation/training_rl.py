@@ -1,30 +1,67 @@
-from formula_parser import parse
-from rules import State, EliminateDoubleNegation,NegateSequent
-from connectives import Literal, Not
-import random
+import torch, random
+import numpy as np
+from task_generator import generate_formula
+from rules import *
+
+class RLModel(torch.nn.Module):
+    
+    def __init__(self) -> None:
+        super().__init__()
+        self.lstm1 = torch.nn.LSTM(11, 70)
+        self.ac1 = torch.nn.ReLU()
+        self.fcn2 = torch.nn.Linear(88, 1)
+        self.action_list = [NegateGoal, NegateSequent, DeMorganAnd, DeMorganOr, DeMorganExistential,
+               DeMorganUniversal, ExistentialReplacement, UniversalReplacement,
+                AndAssumption, OrAssumption, XorAssumption, UniversalAssumption,
+                ExistentialAssumption, AndGoal, OrGoal, XorGoal, UniversalGoal, ExistentialGoal]
+
+    def forward(self, x: torch.Tensor, given_action) -> torch.Tensor:
+        x = self.lstm1(x)[1][0].squeeze()
+        x = self.ac1(x)
+        selected_action = torch.tensor([given_action is action for action in self.action_list]).to(torch.float32)
+        with_actions = torch.cat([x,selected_action]) 
+        return self.fcn2(with_actions)
+    
+def feedback(optimizer, expected, recieved):
+    optimizer.zero_grad()
+    print(f"Expected:{expected[0][0]:.3f} Recieved:{recieved:.3f}")
+    criterion = torch.nn.SmoothL1Loss()
+    received_tensor = torch.tensor(recieved, requires_grad=True)
+    expected_tensor = torch.tensor(expected, requires_grad=True).unsqueeze(1)
+    loss = criterion(received_tensor, expected_tensor)
+    loss.backward()
+    optimizer.step()
 
 transposition_table = {}
+action_list = [NegateGoal, NegateSequent, DeMorganAnd, DeMorganOr, DeMorganExistential,
+               DeMorganUniversal, ExistentialReplacement, UniversalReplacement,
+                AndAssumption, OrAssumption, XorAssumption, UniversalAssumption,
+                ExistentialAssumption, AndGoal, OrGoal, XorGoal, UniversalGoal, ExistentialGoal]
 
-# Define different solving approaches
 
 # Solve by brute force - the only one so far 
-def brute_force(state):
+def reinforcement_tree_search(state):
     proof = str(state)
-
     #  **** DOES THE STATE FIT THE AXIOMS? **** 
     # Check whether the given state already fit axioms
     fiting_axiom = state.fitAxioms()
     # If true, return the state together with fulfilled axiom
     if fiting_axiom:
+        print(f"{fiting_axiom}")
         return f"{proof}\n{fiting_axiom}"
     # If not, save the current state to transpostition table as 'yet unsolved'
     transposition_table[hash(state)] = ""
 
 
     #  **** GET ALL POSSIBLE ACTIONS **** 
-    # Get all applicable actions and shuffle them
+    # Get all applicable actions and usinf the RL model select at most 3 most promising
     possible_actions = state.possibleActions()
-    random.shuffle(possible_actions)
+    qualities = np.array([state.model(torch.tensor(state.embedde()).to(torch.float32), action).detach().numpy() for action in possible_actions])
+    prefered_indexes = np.argsort(qualities)
+    chosen_actions = []
+    for i in range(min([3, len(possible_actions)])):
+        pref_index = prefered_indexes[i][0]
+        chosen_actions.append(action_list[pref_index])
 
     # Some heuristics needed to make brute force at least somewhat useful
     # Heuristics: if possible, eliminate double negation
@@ -43,7 +80,8 @@ def brute_force(state):
 
     #  **** APPLY ACTIONS ****
     # Loop actions
-    for action in possible_actions:
+    for a,action in enumerate(possible_actions):
+        predicted_quality = qualities[prefered_indexes[a]]
         # For each action, get indices of sequents where it can be applied
         sequents = action.applicable(state)
         # Apply action on every possible sequent
@@ -59,7 +97,15 @@ def brute_force(state):
                         result.append(action.apply(State(*state.formulas,deterministic = False),sequent,replace_dict)) 
                     # Set 
                 # Otherwise simply apply the action
-                else: result = action.apply(State(*state.formulas),sequent)
+                else: 
+                    result = action.apply(State(*state.formulas),sequent)
+                    if isinstance(result,State):
+                        for f,formula in enumerate(result.formulas):
+                            result.formulas[f] = EliminateDoubleNegation.cursorize(formula)
+                            formula = result.formulas[f]
+                            if isinstance(formula, BinaryGate):
+                                for o, operand in enumerate(formula.operands):
+                                    formula.operands[o] = EliminateDoubleNegation.cursorize(operand)
             # If a recursion error occurs during action aplication, continue to the next sequent
             except RecursionError:
                 print("Reccursion error occured")
@@ -77,18 +123,21 @@ def brute_force(state):
                     # Otherwise apply brute_force recursively to it
                     else:
                         try:
-                            subproof = brute_force(res_state)
+                            subproof = reinforcement_tree_search(res_state)
                         # If a recursion error occurs, return "Proof not found"
                         # We are not searching further, because any other brute_dorce call would cause the same
                         except RecursionError:
                             return ""
                     # If a proof for the branch was found and the action is indeterministic, return the proof
                     if subproof and not res_state.deterministic:
+                        feedback(state.optimizer,predicted_quality,1/np.log10(len(subproof)))
                         proof = f"{proof}\n{action.__name__}:\n{subproof}"
                         transposition_table[hash(state)] = proof
                         return proof
                     # If a proof for the branch was not found and the action is deterministic stop looping the sequents
-                    elif not subproof and res_state.deterministic:break
+                    elif not subproof and res_state.deterministic:
+                        feedback(state.optimizer,predicted_quality,-1.0)
+                        break
                     # Otherwise, save the proof
                     prooflist.append(subproof)
                 # If the action is deterministc and proofs were found for all its branches, combine those proofs and return them
@@ -100,49 +149,49 @@ def brute_force(state):
                             subproof += f"\nBranch {b}:"
                             subproof += ("\n"+branch).replace("\n","\n  ")
                         proof = f"{proof}\n{action.__name__}:{subproof}"
+                        feedback(state.optimizer,predicted_quality,1/np.log10(len(subproof)))
                         # Add the found proof to the transposition table
                         transposition_table[hash(state)] = proof 
                         # Return the proof 
                         return proof
+                    else: feedback(state.optimizer,predicted_quality,-1.0)
             # If application of action resulted into a single state, inspect it
             else:
                 # If the resulting state was already found, get its result from the transposition table
                 if hash(result) in transposition_table.keys():
                     subproof = transposition_table[hash(result)]
+                    if not subproof and action is EliminateDoubleNegation: return ""
                 # Otherwise apply brute_force recursively to it
                 else:
                     try:
-                        subproof = brute_force(result)
+                        subproof = reinforcement_tree_search(result)
                     except RecursionError:
                         return ""
                 # If the proof of resulting state was found, return it
-                if subproof: 
+                if subproof:
+                    feedback(state.optimizer,predicted_quality,1/np.log10(len(subproof))) 
                     proof = f"{proof}\n{action.__name__}:\n{subproof}"
                     # Update the entry in the transposition table
                     transposition_table[hash(state)] = proof
                     return proof
+                else:
+                    feedback(state.optimizer,predicted_quality,-1.0)
 
     # If no of the actions resulted into proof, return "proof not found" 
     return ""
 
-# Data:Graph node
-# Return: proof found ? True : False
-def reinforcement_tree_search(state):
-    if state.fitAxioms():
-        return True
-    actions = state.possibleActions()
-    if actions.length == 0:
-        return False
-    actions.sort(key = lambda action: state.evaluateAction(action))
-    for action in actions[-2:]:
-        if reinforcement_tree_search(state.applyAction(action)):
-            return True
-    return False 
+model = RLModel()
+State.model = model
+State.optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
 
-# Parse the given file 
-state = parse(input("File directory:"))
-# Find proof via brute force
-proof = brute_force(state)
-# Print the result
-print(proof if proof else "Proof not found")
+criterion = torch.nn.CrossEntropyLoss()
 
+go = True
+while go:
+    state = generate_formula(int(input("What should be the formula complexity? ")))
+    print(state)
+    steps = 0
+    transposition_table = {}
+    reinf_solution = reinforcement_tree_search(state)
+    print(f"Conclusion: {bool(reinf_solution)}")
+    go = input("Should I continue (do not type anything if not)? ")

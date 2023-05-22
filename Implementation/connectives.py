@@ -1,8 +1,16 @@
+import numpy as np
+
 # Connective
 class Connective:
     
     def __eq__(self, __value: object) -> bool:
         return hash(str(self)) == hash(str(__value))
+    
+    def __hash__(self) -> int:
+        if not hasattr(self,'hash'):
+            self.hash = hash(str(np.random.randint(0,15000)) + str(self))
+        return self.hash
+
     
 # Quantifiers
 class Quantifier(Connective):

@@ -1,8 +1,34 @@
 import itertools
+import numpy as np
 from connectives import *
 from axioms import Axiom
+import torch
 
 class State():
+
+    model = None
+
+    optimizer = None
+
+    @property
+    def model(self):
+        return State.model 
+
+    @property
+    def optimizer(self):
+        return State.optimizer
+
+    @staticmethod
+    def embedde_token(keyword):
+        building_blocks = ["Forall","Exist","And","Or","Xor"]
+        main_vect = np.zeros(7)
+        try:
+            search_key = keyword.replace("(","").replace(")","").replace("-","")
+            main_vect[building_blocks.index(search_key)] = 1
+        except ValueError:
+            main_vect[-2] = 1
+        main_vect[-1] = keyword.count("-")
+        return main_vect
     
     def __init__(self,*args,deterministic=True) -> None:
         self.formulas = list(args)
@@ -48,6 +74,32 @@ class State():
         except RecursionError:
             to_return = hash("This is too complex to be the right way")
         return to_return
+
+    def embedde(self):
+        str_rep = str(self)
+        tokens = str_rep.split()
+        vectors = []
+        level = 0
+        pos = 0
+        for t in range(60):
+            if t < len(tokens):
+                toptok = tokens[t]
+                if toptok == "==>": continue
+                for tok in toptok.split(";"):
+                    level += tok.count("(") - tok.count(")")
+                    main_vect = State.embedde_token(tok)
+                    main_vect[-1] = level
+                    added_vect = np.zeros(4)
+                    if main_vect[-2] and level < 3:
+                        var = tok.replace("(","").replace(")","").replace("-","")
+                        added_vect[0] = str_rep.count(f"-({var})")
+                        added_vect[1] = str_rep.count(f" {var};") + str_rep.count(f";{var} ")
+                        added_vect[2] = (pos - str_rep.index(var))/len(str_rep)
+                        added_vect[3] = (len(str_rep) + str_rep[::-1].index(var[::-1]) + pos)/len(str_rep)
+                    vectors.append(np.concatenate([main_vect,added_vect]).transpose())
+                    pos += 1
+            else: vectors.append(np.zeros(11))
+        return np.vstack(vectors)
 
 # Actions
 
@@ -98,15 +150,20 @@ class EliminateDoubleNegation(Action):
 
     @staticmethod
     def apply(state:State,formula:int) -> State:
-        negations = 2
         cursor = state.formulas[formula].operand.operand
+        # Return the state with given formula negated at most once
+        state.formulas[formula] = EliminateDoubleNegation.cursorize(cursor)
+        return state
+    
+    @staticmethod
+    def cursorize(connective:Connective):
+        cursor = connective
         # Loop operands until you find a non-Not one
+        negations = 0
         while isinstance(cursor, Not):
             negations += 1
             cursor = cursor.operand
-        # Return the state with given formula negated at most once
-        state.formulas[formula] = Not(cursor) if negations % 2 else cursor
-        return state
+        return Not(cursor) if negations % 2 else cursor
 
 class NegateGoal(Action):
 
@@ -248,7 +305,7 @@ class ExistentialReplacement(Action):
     def apply(state:State,formula:int) -> State:
         return QuantifierReplacementAbstract.apply(state,Or,formula)
 
-class ExistentialReplacement(Action):
+class UniversalReplacement(Action):
     
     @staticmethod
     def applicable(state:State) -> list:
@@ -430,7 +487,7 @@ class XorGoal(Action):
         # Create two new branches corresponding to moving negated xor to assumption
         xor = state.formulas[formula]
         state.formulas[formula] = Or()
-        return [State(*xor.successors,*state.operands),State(Or(*xor.successors),*state.operands)]
+        return [State(*xor.operands,*state.formulas),State(Or(*xor.operands),*state.formulas)]
 
 class UniversalGoal(Action):
 
